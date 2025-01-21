@@ -1,0 +1,203 @@
+name: Semgrep Scans with .NET lock files
+
+on:
+  workflow_dispatch: 
+  push:
+    branches:
+      - dev # or the default branch you are using
+  pull_request:
+    branches:
+      - dev # or the default branch you are using
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    outputs:
+      has_dotnet_files: ${{ steps.check.outputs.has_dotnet_files }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Check for .csproj or .sln files
+        id: check
+        run: |
+          if git ls-files '*.csproj' '*.sln' | grep -q '.'; then
+            echo "has_dotnet_files=true" >> "$GITHUB_OUTPUT"
+            echo "has_dotnet_files=true" >> $GITHUB_ENV
+          else
+            echo "has_dotnet_files=false" >> "$GITHUB_OUTPUT"
+            echo "has_dotnet_files=false" >> $GITHUB_ENV
+          fi
+
+      - name: Setup .NET Core
+        if: env.has_dotnet_files == 'true'
+        uses: actions/setup-dotnet@v2
+        with:
+          dotnet-version: '8.0.100' # or the version you are using
+
+      - name: Restore dependencies
+        # run: dotnet restore -p:RestorePackagesWithLockFile=True
+        if: env.has_dotnet_files == 'true'
+        run : |     
+          echo "Step 1: Finding '*.csproj' files..."
+          find_out=$(find . -type f -name '*.csproj')
+      
+          echo "Step 2: Filtering out the root '*.csproj'..."
+          filtered_out=$(echo "$find_out" | grep -v '^./*.csproj$' || true)
+      
+          if [ -z "$filtered_out" ]; then
+            echo "No submodule *.csproj files found after filtering. Skipping submodule processing."
+          else
+            echo "Step 3: Removing './' prefix..."
+            sed_out=$(echo "$filtered_out" | sed 's|^\./||')
+      
+            echo "Step 4: Getting unique directories..."
+            csproj=$(echo "$sed_out" | xargs -I {} dirname {} | sort | uniq)
+          fi
+      
+          current_dir=$(pwd)
+      
+          # Print the current directory
+          echo "The current directory is: $current_dir"
+          if [ -z "$csproj" ]; then
+            echo "No *.csproj files found. Skipping submodule processing."
+          else
+            for dir in $csproj; do
+      
+              cd $dir && dotnet restore -p:RestorePackagesWithLockFile=True || true  && cd $current_dir
+      
+              if [ -f "$dir/packages.lock.json" ]; then
+                echo "Successfully generated $dir/packages.lock.json"
+              else
+                echo "Failed to generate $dir/packages.lock.json"
+              fi
+            done
+          fi
+
+      - name: Upload Lock File    
+        if: env.has_dotnet_files == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: lockfile
+          path: '**/packages.lock.json'
+  semgrep:
+      needs: restore
+      name: Scan
+      runs-on: ubuntu-20.04
+      env:
+        SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        HAS_DOTNET_FILES: ${{ needs.restore.outputs.has_dotnet_files }}
+      container:
+        image: semgrep/semgrep
+      steps:
+      - uses: actions/checkout@v3
+      - name: Download artifact from previous job
+        if: ${{ needs.restore.outputs.has_dotnet_files == 'true' }}
+        uses: actions/download-artifact@v3
+        with:
+          name: lockfile 
+      - run: |
+          echo "HAS_DOTNET_FILES: $HAS_DOTNET_FILES"
+          tree 
+          semgrep ci --verbose --supply-chain
+          
+
+
+# name: Semgrep Scans with .NET lock files
+
+# on:
+#   workflow_dispatch: 
+#   push:
+#     branches:
+#       - dev # or the default branch you are using
+#   pull_request:
+#     branches:
+#       - dev # or the default branch you are using
+
+# jobs:
+#   restore:
+#     runs-on: ubuntu-latest
+    
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v2
+
+#       - name: Check for .csproj or .sln files
+#         id: check
+#         run: |
+#           if git ls-files '*.csproj' '*.sln' | grep -q '.'; then
+#             echo "has_dotnet_files=true" >> $GITHUB_ENV
+#           else
+#             echo "has_dotnet_files=false" >> $GITHUB_ENV
+#           fi
+
+#       - name: Setup .NET Core
+#         if: env.has_dotnet_files == 'true'
+#         uses: actions/setup-dotnet@v2
+#         with:
+#           dotnet-version: '8.0.100' # or the version you are using
+
+#       - name: Restore dependencies
+#         # run: dotnet restore -p:RestorePackagesWithLockFile=True
+#         if: env.has_dotnet_files == 'true'
+#         run : |     
+#           echo "Step 1: Finding '*.csproj' files..."
+#           find_out=$(find . -type f -name '*.csproj')
+      
+#           echo "Step 2: Filtering out the root '*.csproj'..."
+#           filtered_out=$(echo "$find_out" | grep -v '^./*.csproj$' || true)
+      
+#           if [ -z "$filtered_out" ]; then
+#             echo "No submodule *.csproj files found after filtering. Skipping submodule processing."
+#           else
+#             echo "Step 3: Removing './' prefix..."
+#             sed_out=$(echo "$filtered_out" | sed 's|^\./||')
+      
+#             echo "Step 4: Getting unique directories..."
+#             csproj=$(echo "$sed_out" | xargs -I {} dirname {} | sort | uniq)
+#           fi
+      
+#           current_dir=$(pwd)
+      
+#           # Print the current directory
+#           echo "The current directory is: $current_dir"
+#           if [ -z "$csproj" ]; then
+#             echo "No *.csproj files found. Skipping submodule processing."
+#           else
+#             for dir in $csproj; do
+      
+#               cd $dir && dotnet restore -p:RestorePackagesWithLockFile=True || true  && cd $current_dir
+      
+#               if [ -f "$dir/packages.lock.json" ]; then
+#                 echo "Successfully generated $dir/packages.lock.json"
+#               else
+#                 echo "Failed to generate $dir/packages.lock.json"
+#               fi
+#             done
+#           fi
+
+#       - name: Upload Lock File    
+#         if: env.has_dotnet_files == 'true'
+#         uses: actions/upload-artifact@v3
+#         with:
+#           name: lockfile
+#           path: '**/packages.lock.json'
+#   semgrep:
+#       needs: restore
+#       name: Scan
+#       runs-on: ubuntu-20.04
+#       env:
+#         SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+#       container:
+#         image: semgrep/semgrep
+#       steps:
+#       - uses: actions/checkout@v3
+#       - name: Download artifact from previous job
+#         uses: actions/download-artifact@v3
+#         with:
+#           name: lockfile 
+#       - run: |
+#           tree 
+#           semgrep ci --verbose --supply-chain
+          
